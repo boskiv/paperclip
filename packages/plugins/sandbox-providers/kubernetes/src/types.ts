@@ -13,6 +13,14 @@ export const kubernetesProviderConfigSchema = z
     companySlug: z.string().regex(/^[a-z0-9-]{1,32}$/).optional(),
 
     imageRegistry: z.string().url().optional(),
+    /**
+     * Full runtime image reference for this environment's adapter (e.g.
+     * `registry.example.com/team/agent-runtime:1.4.2` or `...@sha256:...`).
+     * Wins over `imageRegistry`. Pods use `imagePullPolicy: IfNotPresent`, so a
+     * fixed default tag (`:v1`) is never re-pulled once cached on a node; a
+     * versioned or digest reference here makes image upgrades roll out.
+     */
+    runtimeImage: z.string().trim().min(1).optional(),
     imageAllowList: z.array(z.string()).default([]),
     imagePullSecrets: z.array(z.string()).default([]),
 
