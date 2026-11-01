@@ -48,7 +48,9 @@ export function resolveImage(
 function rewriteRegistry(image: string, registry: string): string {
   // image is like "ghcr.io/paperclipai/agent-runtime-claude:v1"
   // we want to replace the first two path segments (host + org) with `registry`
-  const cleanRegistry = registry.replace(/\/+$/, "");
+  // `imageRegistry` is validated as a URL (config schema), but an image
+  // reference has no scheme: strip it, or the kubelet rejects the image name.
+  const cleanRegistry = registry.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/+$/, "");
   const colonIdx = image.lastIndexOf(":");
   const tag = colonIdx >= 0 ? image.slice(colonIdx) : "";
   const path = colonIdx >= 0 ? image.slice(0, colonIdx) : image;

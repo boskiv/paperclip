@@ -1,6 +1,6 @@
 /**
  * SandboxOrchestrator implementation backed by the kubernetes-sigs/agent-sandbox
- * Sandbox CRD (agents.x-k8s.io/v1alpha1).
+ * Sandbox CRD (agents.x-k8s.io/v1beta1, agent-sandbox v1.0+).
  *
  * The Sandbox CR creates a long-lived pod that paperclip-server can exec into
  * for multi-command adapter-install workflows — the key architectural win over
@@ -22,10 +22,11 @@
  */
 
 import type { KubeClients } from "./kube-client.js";
+import { SANDBOX_API_VERSION_NAME } from "./sandbox-cr-builder.js";
 import type { SandboxOrchestrator, SandboxStatus } from "./sandbox-orchestrator.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
+const SANDBOX_VERSION = SANDBOX_API_VERSION_NAME;
 const SANDBOX_PLURAL = "sandboxes";
 
 export class SandboxCrTimeoutError extends Error {
@@ -266,7 +267,7 @@ export async function waitForSandboxReady(
     }) as Record<string, unknown>;
 
     const status = (cr.status as Record<string, unknown>) ?? {};
-    // agent-sandbox v1alpha1 uses status.conditions[type=Ready,status=True],
+    // agent-sandbox v1beta1 (as v1alpha1 before it) uses status.conditions[type=Ready,status=True],
     // not status.phase. Fall back to phase for forward-compat.
     const conditions = Array.isArray(status.conditions) ? status.conditions as Array<Record<string, unknown>> : [];
     const readyCondition = conditions.find((c) => c.type === "Ready");

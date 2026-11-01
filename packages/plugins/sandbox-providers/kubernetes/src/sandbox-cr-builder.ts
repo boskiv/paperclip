@@ -32,6 +32,13 @@ export interface BuildSandboxCrManifestInput {
   imagePullSecrets?: string[];
 }
 
+// agent-sandbox v1.0+ serves only agents.x-k8s.io/v1beta1 (v1alpha1 was removed);
+// the fields this plugin uses (spec.podTemplate, Ready condition, sandbox-name-hash
+// label) are unchanged between the two versions.
+export const SANDBOX_API_GROUP = "agents.x-k8s.io";
+export const SANDBOX_API_VERSION_NAME = "v1beta1";
+export const SANDBOX_API_VERSION = `${SANDBOX_API_GROUP}/${SANDBOX_API_VERSION_NAME}`;
+
 export function buildSandboxCrManifest(
   input: BuildSandboxCrManifestInput,
 ): Record<string, unknown> {
@@ -40,7 +47,7 @@ export function buildSandboxCrManifest(
     "paperclip.io/role": "agent",
   };
   return {
-    apiVersion: "agents.x-k8s.io/v1alpha1",
+    apiVersion: SANDBOX_API_VERSION,
     kind: "Sandbox",
     metadata: {
       name: input.sandboxName,

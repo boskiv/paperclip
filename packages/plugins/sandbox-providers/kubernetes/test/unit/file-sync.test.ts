@@ -8,6 +8,7 @@ import {
   parseTarVerboseListingLine,
   performSyncIn,
   performSyncOut,
+  selectSyncRoot,
   splitLinkEntryOnce,
   type PodStreamExec,
 } from "../../src/file-sync.js";
@@ -840,5 +841,138 @@ describe("splitLinkEntryOnce", () => {
     // unresolvable; either split choice can hide an escaping target.
     expect(splitLinkEntryOnce("evil -> decoy -> ../../outside.txt", " -> ")).toBeNull();
     expect(splitLinkEntryOnce("a link to b link to ../../outside.txt", " link to ")).toBeNull();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Multiple confinement roots (runtime assets under /tmp, workspace elsewhere)
+// ---------------------------------------------------------------------------
+
+describe("selectSyncRoot", () => {
+  const roots = ["/workspace/task", "/workspace", "/home/paperclip", "/home/paperclip/.cache", "/tmp"];
+
+  it.each([
+    ["/workspace/task/src/main.go", "/workspace/task"],
+    ["/workspace/other/file", "/workspace"],
+    ["/tmp/.paperclip-runtime/paperclip-runner/agent-file-transfers/a/workspace-upload.tar", "/tmp"],
+    ["/home/paperclip/.claude/settings.json", "/home/paperclip"],
+    ["/home/paperclip/.cache/go-build/x", "/home/paperclip/.cache"],
+    ["/tmp", "/tmp"],
+  ])("puts %s under the most specific root %s", (candidate, expected) => {
+    expect(selectSyncRoot(roots, candidate, "target")).toBe(expected);
+  });
+
+  it.each([
+    ["/etc/passwd"],
+    ["/usr/local/bin/claude"],
+    ["/tmpfoo/x"],
+    ["/workspace/../etc/shadow"],
+    ["relative/path"],
+    ["/"],
+  ])("rejects %s, which is outside every root", (candidate) => {
+    expect(() => selectSyncRoot(roots, candidate, "target")).toThrow();
+  });
+
+  it("keeps the single-root error message when only one root is allowed", () => {
+    expect(() => selectSyncRoot(["/workspace"], "/tmp/x", "target")).toThrow(/escapes the workspace remote dir/);
+  });
+
+  it("refuses an empty root list", () => {
+    expect(() => selectSyncRoot([], "/workspace/x", "target")).toThrow(/no confinement root/);
+  });
+});
+
+describe("performSyncIn with extra roots", () => {
+  it("transfers files under two different roots in one operation: one exec per root, each staged inside its own root", async () => {
+    const workspace = await makeTmp("k8s-ws-");
+    const runtime = await makeTmp("k8s-tmp-");
+    const host = await makeTmp("k8s-host-");
+    const codeSrc = path.join(host, "main.go");
+    const assetSrc = path.join(host, "workspace-upload.tar");
+    await fs.writeFile(codeSrc, "package main");
+    await fs.writeFile(assetSrc, "tarbytes");
+
+    const { exec, calls } = makeRealExec();
+    const result = await performSyncIn({
+      exec,
+      remoteDir: workspace,
+      extraRoots: [runtime],
+      timeoutMs: 30_000,
+      operations: [
+        {
+          operationId: "op-mixed",
+          files: [
+            { sourcePath: codeSrc, targetPath: path.join(workspace, "main.go"), kind: "file" },
+            {
+              sourcePath: assetSrc,
+              targetPath: path.join(runtime, ".paperclip-runtime/agent-file-transfers/x/workspace-upload.tar"),
+              kind: "file",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(await fs.readFile(path.join(workspace, "main.go"), "utf-8")).toBe("package main");
+    expect(
+      await fs.readFile(path.join(runtime, ".paperclip-runtime/agent-file-transfers/x/workspace-upload.tar"), "utf-8"),
+    ).toBe("tarbytes");
+    // Each exec stages inside its own root, so the final `mv -f` never crosses volumes.
+    expect(calls.some((call) => call.script.includes(path.join(workspace, ".paperclip-upload")))).toBe(true);
+    expect(calls.some((call) => call.script.includes(path.join(runtime, ".paperclip-upload")))).toBe(true);
+    expect(result.operations).toEqual([{ operationId: "op-mixed", filesTransferred: 2, bytesTransferred: expect.any(Number) }]);
+    for (const root of [workspace, runtime]) {
+      expect((await fs.readdir(root)).filter((e) => e.startsWith(".paperclip-upload"))).toEqual([]);
+    }
+  });
+
+  it("still rejects a target outside every root before any exec", async () => {
+    const workspace = await makeTmp("k8s-ws-");
+    const runtime = await makeTmp("k8s-tmp-");
+    const outside = await makeTmp("k8s-outside-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "x.txt");
+    await fs.writeFile(src, "x");
+
+    const { exec, calls } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir: workspace,
+        extraRoots: [runtime],
+        timeoutMs: 30_000,
+        operations: [{ operationId: "op", files: [{ sourcePath: src, targetPath: path.join(outside, "x.txt"), kind: "file" }] }],
+      }),
+    ).rejects.toThrow(/escapes every allowed sandbox root/);
+    expect(calls).toHaveLength(0);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
+  it("rejects an escaping post-upload cwd before running any command, even an earlier valid one", async () => {
+    const workspace = await makeTmp("k8s-ws-");
+    const runtime = await makeTmp("k8s-tmp-");
+    const outside = await makeTmp("k8s-outside-");
+    const { exec, calls } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir: workspace,
+        extraRoots: [runtime],
+        timeoutMs: 30_000,
+        operations: [
+          {
+            operationId: "op",
+            files: [],
+            postUploadCommands: [
+              { command: "touch ran-first", cwd: workspace },
+              { command: "touch escaped", cwd: outside },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/post-upload command cwd/);
+    expect(calls).toHaveLength(0);
   });
 });

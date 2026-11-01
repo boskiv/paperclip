@@ -139,6 +139,55 @@ export function assertConfinedSandboxPath(remoteDir: string, candidate: string, 
 }
 
 /**
+ * Pick the confinement root for a sandbox path from a set of allowed roots: the
+ * most specific (longest) root that lexically contains the candidate. Every
+ * transfer then runs with a single root, so the existing in-pod confinement,
+ * staging dir and atomic `mv -f` stay on the same volume as the target.
+ *
+ * The runtime places workspace files under the workspace dir and its own runner
+ * assets under `/tmp/.paperclip-runtime/...`, sometimes before `realizeWorkspace`
+ * records `remoteCwd`; a single root cannot cover both. Roots are the pod's
+ * writable volumes only (the root filesystem is read-only), so confinement is not
+ * widened beyond what the pod can already write.
+ */
+export function selectSyncRoot(roots: readonly string[], candidate: string, label: string): string {
+  const normalizedRoots = [...new Set(roots.map((root) => path.posix.normalize(root)))].sort(
+    (a, b) => b.length - a.length,
+  );
+  if (normalizedRoots.length === 0) {
+    throw new Error(`Kubernetes sync ${label} has no confinement root`);
+  }
+  let lastError: unknown;
+  for (const root of normalizedRoots) {
+    try {
+      assertConfinedSandboxPath(root, candidate, label);
+      return root;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (normalizedRoots.length === 1) throw lastError;
+  throw new Error(
+    `Kubernetes sync ${label} path escapes every allowed sandbox root (${normalizedRoots.join(", ")}): ${candidate}`,
+  );
+}
+
+function syncRoots(input: { remoteDir: string; extraRoots?: readonly string[] }): string[] {
+  return [input.remoteDir, ...(input.extraRoots ?? [])];
+}
+
+function groupByRoot<T>(items: readonly T[], rootOf: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const root = rootOf(item);
+    const group = groups.get(root);
+    if (group) group.push(item);
+    else groups.set(root, [item]);
+  }
+  return groups;
+}
+
+/**
  * True when `relative` (a POSIX path) escapes its anchoring directory once
  * normalized: an absolute path, `..`, or a `..`-leading traversal all break out.
  */
@@ -680,8 +729,11 @@ export async function performSyncIn(input: {
   exec: PodStreamExec;
   operations: PluginSyncOperation[];
   remoteDir: string;
+  /** Additional confinement roots (pod volumes) besides `remoteDir`. */
+  extraRoots?: readonly string[];
   timeoutMs: number;
 }): Promise<PluginEnvironmentSyncResult> {
+  const roots = syncRoots(input);
   const operations: PluginEnvironmentSyncResult["operations"] = [];
   for (const operation of input.operations) {
     let filesTransferred = 0;
@@ -690,20 +742,24 @@ export async function performSyncIn(input: {
     const fileMappings = operation.files.filter((mapping) => mapping.kind === "file");
     const directoryMappings = operation.files.filter((mapping) => mapping.kind === "directory");
 
-    const fileResult = await syncInFileMappings({
-      exec: input.exec,
-      mappings: fileMappings,
-      remoteDir: input.remoteDir,
-      timeoutMs: input.timeoutMs,
-    });
-    filesTransferred += fileResult.filesTransferred;
-    bytesTransferred += fileResult.bytesTransferred;
+    // One exec per root that the operation's file targets fall under (usually one).
+    const fileGroups = groupByRoot(fileMappings, (mapping) => selectSyncRoot(roots, mapping.targetPath, "target"));
+    for (const [root, mappings] of fileGroups) {
+      const fileResult = await syncInFileMappings({
+        exec: input.exec,
+        mappings,
+        remoteDir: root,
+        timeoutMs: input.timeoutMs,
+      });
+      filesTransferred += fileResult.filesTransferred;
+      bytesTransferred += fileResult.bytesTransferred;
+    }
 
     for (const mapping of directoryMappings) {
       const dirResult = await syncInDirectoryMapping({
         exec: input.exec,
         mapping,
-        remoteDir: input.remoteDir,
+        remoteDir: selectSyncRoot(roots, mapping.targetPath, "target"),
         timeoutMs: input.timeoutMs,
       });
       filesTransferred += dirResult.filesTransferred;
@@ -712,13 +768,23 @@ export async function performSyncIn(input: {
 
     // Run the operation's ordered post-upload commands AFTER every file/directory
     // mapping of this operation has landed (Phase 3 / C1–C4 + C7). Absent/empty →
-    // no extra exec, byte-identical to a pre-contract operation.
-    await runPostUploadCommands({
-      exec: input.exec,
-      commands: operation.postUploadCommands ?? [],
-      remoteDir: input.remoteDir,
-      timeoutMs: input.timeoutMs,
-    });
+    // no extra exec, byte-identical to a pre-contract operation. Each command is
+    // confined to the root holding its cwd (default: the workspace remote dir);
+    // commands run one at a time in array order either way.
+    // Confine every command's cwd BEFORE running any of them (C2: an escaping cwd
+    // rejects the operation before a single exec).
+    const commands = operation.postUploadCommands ?? [];
+    const commandRoots = commands.map((command) =>
+      selectSyncRoot(roots, command.cwd ?? input.remoteDir, "post-upload command cwd"),
+    );
+    for (const [index, command] of commands.entries()) {
+      await runPostUploadCommands({
+        exec: input.exec,
+        commands: [command],
+        remoteDir: commandRoots[index],
+        timeoutMs: input.timeoutMs,
+      });
+    }
 
     operations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });
   }
@@ -877,10 +943,13 @@ export async function performSyncOut(input: {
   exec: PodStreamExec;
   operations: PluginSyncOperation[];
   remoteDir: string;
+  /** Additional confinement roots (pod volumes) besides `remoteDir`. */
+  extraRoots?: readonly string[];
   timeoutMs: number;
   maxOutputBytes?: number;
 }): Promise<PluginEnvironmentSyncResult> {
   const maxOutputBytes = input.maxOutputBytes ?? MAX_SYNC_OUTPUT_BYTES;
+  const roots = syncRoots(input);
   const operations: PluginEnvironmentSyncResult["operations"] = [];
   for (const operation of input.operations) {
     let filesTransferred = 0;
@@ -889,21 +958,24 @@ export async function performSyncOut(input: {
     const fileMappings = operation.files.filter((mapping) => mapping.kind === "file");
     const directoryMappings = operation.files.filter((mapping) => mapping.kind === "directory");
 
-    const fileResult = await syncOutFileMappings({
-      exec: input.exec,
-      mappings: fileMappings,
-      remoteDir: input.remoteDir,
-      timeoutMs: input.timeoutMs,
-      maxOutputBytes,
-    });
-    filesTransferred += fileResult.filesTransferred;
-    bytesTransferred += fileResult.bytesTransferred;
+    const fileGroups = groupByRoot(fileMappings, (mapping) => selectSyncRoot(roots, mapping.sourcePath, "source"));
+    for (const [root, mappings] of fileGroups) {
+      const fileResult = await syncOutFileMappings({
+        exec: input.exec,
+        mappings,
+        remoteDir: root,
+        timeoutMs: input.timeoutMs,
+        maxOutputBytes,
+      });
+      filesTransferred += fileResult.filesTransferred;
+      bytesTransferred += fileResult.bytesTransferred;
+    }
 
     for (const mapping of directoryMappings) {
       const dirResult = await syncOutDirectoryMapping({
         exec: input.exec,
         mapping,
-        remoteDir: input.remoteDir,
+        remoteDir: selectSyncRoot(roots, mapping.sourcePath, "source"),
         timeoutMs: input.timeoutMs,
         maxOutputBytes,
       });

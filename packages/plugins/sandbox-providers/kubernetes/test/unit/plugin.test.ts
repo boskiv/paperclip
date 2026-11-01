@@ -100,7 +100,7 @@ describe("plugin", () => {
     expect(plugin.definition.onEnvironmentSyncOut).toBeTypeOf("function");
   });
 
-  it("file sync fails loud when the lease carries no workspace remote dir", async () => {
+  it("file sync without a recorded remoteCwd falls back to the /workspace root instead of failing", async () => {
     await expect(
       plugin.definition.onEnvironmentSyncIn!({
         driverKey: "kubernetes",
@@ -110,7 +110,9 @@ describe("plugin", () => {
         lease: { providerLeaseId: "lease-1", metadata: {} },
         operations: [],
       }),
-    ).rejects.toThrow(/workspace remote dir/);
+    // It now proceeds to resolve the pod (and fails there for this bare lease),
+    // rather than refusing up front for a missing workspace remote dir.
+    ).rejects.not.toThrow(/workspace remote dir/);
   });
 
   it("file sync rejects the job backend (out of scope; sandbox-cr only)", async () => {

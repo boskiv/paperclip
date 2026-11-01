@@ -27,7 +27,7 @@ import { createKubeConfig, makeKubeClients } from "./kube-client.js";
 import { getAdapterDefaults, buildAdapterEnv, resolveRunAdapterType } from "./adapter-defaults.js";
 import { resolveImage } from "./image-allowlist.js";
 import { buildJobManifest } from "./pod-spec-builder.js";
-import { buildSandboxCrManifest } from "./sandbox-cr-builder.js";
+import { buildSandboxCrManifest, SANDBOX_API_VERSION } from "./sandbox-cr-builder.js";
 import { ensureTenant } from "./tenant-orchestrator.js";
 import { createPerRunSecret } from "./secret-manager.js";
 import { FastUploadInterceptor } from "./upload-interceptor.js";
@@ -119,16 +119,24 @@ const readySandboxesByLease = new Set<string>();
 const RESUME_READY_TIMEOUT_MS = 30_000;
 const RESUME_READY_POLL_MS = 1_000;
 
-// The workspace remote dir is the confinement root for native file sync. It is
-// recorded on the lease metadata at realizeWorkspace time (`remoteCwd`); require
-// it so a sync can never run without a concrete root to confine every sandbox
-// path against.
+// The workspace remote dir is the primary confinement root for native file sync.
+// It is recorded on the lease metadata at realizeWorkspace time (`remoteCwd`).
+// The runtime can sync before that (e.g. the Claude config seed during an agent
+// environment probe), so fall back to the pod's workspace mount.
+const DEFAULT_SYNC_REMOTE_DIR = "/workspace";
+
+// Every other writable volume of the agent pod (see pod-spec-builder /
+// sandbox-cr-builder): the runtime stages runner assets under
+// `/tmp/.paperclip-runtime/...`, outside the workspace. The root filesystem is
+// read-only, so these are the only places a sync can write anyway.
+export const POD_WRITABLE_SYNC_ROOTS = ["/workspace", "/home/paperclip", "/home/paperclip/.cache", "/tmp"] as const;
+
 function resolveSyncRemoteDir(lease: PluginEnvironmentLease): string {
   const remoteCwd = lease.metadata?.remoteCwd;
   if (typeof remoteCwd === "string" && remoteCwd.trim().length > 0) {
     return remoteCwd.trim();
   }
-  throw new Error("Kubernetes file sync requires a workspace remote dir on the lease metadata.");
+  return DEFAULT_SYNC_REMOTE_DIR;
 }
 
 /**
@@ -407,7 +415,7 @@ const plugin = definePlugin({
         runId: params.runId,
         workloadName: jobName,
         ownerReference: {
-          apiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+          apiVersion: isSandboxCrBackend ? SANDBOX_API_VERSION : "batch/v1",
           kind: isSandboxCrBackend ? "Sandbox" : "Job",
           name: jobName,
           uid: ownerUid,
@@ -438,7 +446,7 @@ const plugin = definePlugin({
       secretName,
       runId: params.runId,
       ownerKind: isSandboxCrBackend ? "Sandbox" : "Job",
-      ownerApiVersion: isSandboxCrBackend ? "agents.x-k8s.io/v1alpha1" : "batch/v1",
+      ownerApiVersion: isSandboxCrBackend ? SANDBOX_API_VERSION : "batch/v1",
       ownerName: jobName,
       ownerUid,
       bootstrapToken,
@@ -1014,6 +1022,7 @@ const plugin = definePlugin({
       exec,
       operations: params.operations,
       remoteDir,
+      extraRoots: POD_WRITABLE_SYNC_ROOTS,
       timeoutMs,
     });
   },
@@ -1028,6 +1037,7 @@ const plugin = definePlugin({
       exec,
       operations: params.operations,
       remoteDir,
+      extraRoots: POD_WRITABLE_SYNC_ROOTS,
       timeoutMs,
     });
   },
