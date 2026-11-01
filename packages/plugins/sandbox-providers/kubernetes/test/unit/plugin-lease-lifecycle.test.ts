@@ -83,8 +83,34 @@ describe("onEnvironmentResumeLease", () => {
         resumedLease: true,
         // sandbox-cr has a pod-exec channel, so native file sync stays enabled.
         nativeFileSyncUnsupported: false,
+        // Published so the server never falls back to its generic /tmp default.
+        remoteCwd: "/workspace",
       }),
     );
+  });
+
+  it("keeps a previously realized remoteCwd when resuming a lease", async () => {
+    h.clients = {
+      custom: {
+        getNamespacedCustomObject: vi.fn().mockResolvedValue(readySandboxCr("pc-abc-pod")),
+      },
+      core: {
+        readNamespacedPod: vi.fn().mockResolvedValue({
+          metadata: {},
+          status: { phase: "Running" },
+        }),
+      },
+    };
+
+    const lease = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "kubernetes",
+      companyId: "acme",
+      environmentId: "env-1",
+      config: CONFIG,
+      providerLeaseId: "pc-abc",
+      leaseMetadata: { ...leaseMetadata(), remoteCwd: "/workspace/repo" },
+    });
+    expect(lease.metadata).toEqual(expect.objectContaining({ remoteCwd: "/workspace/repo" }));
   });
 
   it("flags a resumed job-backend lease as native-sync-unsupported so the server keeps the base64 fallback", async () => {

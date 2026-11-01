@@ -468,6 +468,7 @@ const plugin = definePlugin({
       // exposes one. Flag the job backend so the server keeps the base64 fallback
       // rather than routing its sync to a hook that would reject immediately.
       nativeFileSyncUnsupported: config.backend !== "sandbox-cr",
+      remoteCwd: DEFAULT_SYNC_REMOTE_DIR,
     };
 
     return {
@@ -547,6 +548,11 @@ const plugin = definePlugin({
       // See acquireLease: only the sandbox-cr backend has a pod-exec channel for
       // native sync, so a resumed job lease must keep the base64 fallback.
       nativeFileSyncUnsupported: leaseBackend !== "sandbox-cr",
+      // Keep the workspace dir the previous run realized (or the pod mount).
+      remoteCwd:
+        typeof params.leaseMetadata?.remoteCwd === "string" && params.leaseMetadata.remoteCwd.trim().length > 0
+          ? params.leaseMetadata.remoteCwd.trim()
+          : DEFAULT_SYNC_REMOTE_DIR,
     };
 
     return {

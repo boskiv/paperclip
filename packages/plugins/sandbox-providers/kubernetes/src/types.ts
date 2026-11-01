@@ -105,4 +105,12 @@ export interface KubernetesLeaseMetadata {
    * sync may be used when the worker advertises the verbs.
    */
   nativeFileSyncUnsupported?: boolean;
+  /**
+   * Workspace dir inside the agent pod. Published at acquire/resume time: the
+   * server builds the run's execution target from lease metadata and, without a
+   * `remoteCwd`, falls back to its generic sandbox default `/tmp`, so the runtime
+   * would unpack the workspace into `/tmp` while the pod's workspace volume is
+   * mounted at `/workspace`.
+   */
+  remoteCwd?: string;
 }
