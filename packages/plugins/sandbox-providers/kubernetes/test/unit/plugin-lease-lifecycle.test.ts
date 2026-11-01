@@ -83,8 +83,9 @@ describe("onEnvironmentResumeLease", () => {
         resumedLease: true,
         // sandbox-cr has a pod-exec channel, so native file sync stays enabled.
         nativeFileSyncUnsupported: false,
-        // Published so the server never falls back to its generic /tmp default.
-        remoteCwd: "/workspace",
+        // Published so the server never falls back to its generic /tmp default;
+        // a subdir of the volume so the agent user owns the repo root.
+        remoteCwd: "/workspace/repo",
       }),
     );
   });

@@ -122,8 +122,15 @@ const RESUME_READY_POLL_MS = 1_000;
 // The workspace remote dir is the primary confinement root for native file sync.
 // It is recorded on the lease metadata at realizeWorkspace time (`remoteCwd`).
 // The runtime can sync before that (e.g. the Claude config seed during an agent
-// environment probe), so fall back to the pod's workspace mount.
-const DEFAULT_SYNC_REMOTE_DIR = "/workspace";
+// environment probe), so fall back to the default workspace dir.
+//
+// The default is a subdir of the /workspace volume, not the mount itself: the
+// emptyDir mount root is owned by root (group = fsGroup), while the agent runs as
+// uid 1000, so git refuses a repo at the mount root ("detected dubious
+// ownership"), and the runtime disables global/system git config, so a
+// safe.directory entry cannot fix it. A subdir created by the runtime is owned
+// by the agent user.
+const DEFAULT_SYNC_REMOTE_DIR = "/workspace/repo";
 
 // Every other writable volume of the agent pod (see pod-spec-builder /
 // sandbox-cr-builder): the runtime stages runner assets under
@@ -573,7 +580,7 @@ const plugin = definePlugin({
     const cwd =
       params.workspace.remotePath && params.workspace.remotePath.trim().length > 0
         ? params.workspace.remotePath.trim()
-        : "/workspace";
+        : DEFAULT_SYNC_REMOTE_DIR;
     return {
       cwd,
       metadata: {
