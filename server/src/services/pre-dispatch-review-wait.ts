@@ -11,7 +11,8 @@ type DispatchFields = "startedAt" | "runtimeModeResolvedAt" | "processPid" | "pr
 
 const staleDispatchErrorCodes = ["issue_not_found", "issue_not_in_progress", "issue_assignee_changed",
   "issue_waiting_for_response", "issue_continuation_waiting_on_review", "issue_dependencies_blocked",
-  "issue_blocked", "issue_execution_lock_changed", "issue_terminal_status", "issue_review_participant_changed"];
+  "issue_blocked", "issue_execution_lock_changed", "issue_terminal_status", "issue_review_participant_changed",
+  "lock_released_on_reassignment"];
 
 export function neverStartedDispatchCancellationPredicate() {
   return and(

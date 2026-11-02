@@ -53,7 +53,8 @@ describe("legacy continuation persisted authority", () => {
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
     for (const errorCode of ["issue_not_found", "issue_not_in_progress", "issue_waiting_for_response",
       "issue_dependencies_blocked", "issue_blocked",
-      "issue_execution_lock_changed", "issue_terminal_status", "issue_review_participant_changed"]) {
+      "issue_execution_lock_changed", "issue_terminal_status", "issue_review_participant_changed",
+      "lock_released_on_reassignment"]) {
       const changed = { ...run, errorCode };
       await db.update(heartbeatRuns).set(changed).where(eq(heartbeatRuns.id, run.id));
       expect(await legacyExecutionNeedsReconciliationWithEvidence(db, changed)).toBe(false);
