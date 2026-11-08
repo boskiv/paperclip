@@ -171,6 +171,10 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/issues\/[^/]+\/release$/ },
   { method: "PATCH", path: /^\/api\/issues\/[^/]+$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/approvals$/ },
+  // Issue watchdog: agents set, read and remove watchdogs on their tasks.
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/watchdog$/ },
+  { method: "PUT", path: /^\/api\/issues\/[^/]+\/watchdog$/ },
+  { method: "DELETE", path: /^\/api\/issues\/[^/]+\/watchdog$/ },
 
   // Files: the queue encodes binary bodies; HTTP/2 carries the same bytes directly.
   { method: "GET", path: /^\/api\/issues\/[^/]+\/attachments$/ },
